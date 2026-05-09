@@ -1,86 +1,68 @@
 /**
- * GeoTagr Pro — app.js
- * Full application logic: map, upload, EXIF reading, form handling
+ * GeoTagr Pro — app.js v2
  */
-
 'use strict';
 
-// ── State ─────────────────────────────────────────────────────────────────────
 const state = {
-  files: [],      // { file, previewUrl, exifGps, batchId }
+  files: [],
   marker: null,
   lat: null,
   lon: null,
   map: null,
   dmsMode: false,
-  tileLayer: null,
   tileType: 'street',
+  streetTiles: null,
+  satelliteTiles: null,
   searchTimeout: null,
   processing: false,
 };
 
-// ── DOM Refs ──────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
-// ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
   initUpload();
-  initForm();
   initSearch();
   initLayerToggle();
   initGeolocation();
   initDmsToggle();
-  initStripToggle();
 });
 
-// ── Map Initialization ────────────────────────────────────────────────────────
+// ── Map ───────────────────────────────────────────────────────
 function initMap() {
-  const map = L.map('map', {
-    center: [20, 0],
-    zoom: 2,
-    zoomControl: true,
-  });
+  const map = L.map('map', { center: [20, 0], zoom: 2, zoomControl: true });
 
-  const streetTiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19,
   });
 
-  const satelliteTiles = L.tileLayer(
-    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    attribution: '© Esri',
-    maxZoom: 19,
-  });
+  const satellite = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: '© Esri', maxZoom: 19 }
+  );
 
-  streetTiles.addTo(map);
+  street.addTo(map);
   state.map = map;
-  state.tileLayer = streetTiles;
-  state.streetTiles = streetTiles;
-  state.satelliteTiles = satelliteTiles;
+  state.streetTiles = street;
+  state.satelliteTiles = satellite;
 
-  // Force tile refresh after container finishes rendering
+  // Fix tiles on load
   setTimeout(() => map.invalidateSize(), 100);
-  setTimeout(() => map.invalidateSize(), 500);
-
-  // Re-invalidate on window resize
+  setTimeout(() => map.invalidateSize(), 600);
   window.addEventListener('resize', () => map.invalidateSize());
 
-  // Click on map to place pin
-  map.on('click', e => {
-    placePin(e.latlng.lat, e.latlng.lng, true);
-  });
+  map.on('click', e => placePin(e.latlng.lat, e.latlng.lng, true));
 }
 
-// ── Pin Management ────────────────────────────────────────────────────────────
 function placePin(lat, lon, doReverse = false) {
   state.lat = lat;
   state.lon = lon;
 
   const iconHtml = `
-    <svg width="32" height="42" viewBox="0 0 32 42" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M16 0C7.163 0 0 7.163 0 16c0 9.941 14 26 16 26s16-16.059 16-26C32 7.163 24.837 0 16 0z" fill="#00d4aa"/>
-      <circle cx="16" cy="16" r="6" fill="#0a0f1e"/>
+    <svg width="30" height="40" viewBox="0 0 30 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M15 0C6.716 0 0 6.716 0 15c0 9.375 13 25 15 25s15-15.625 15-25C30 6.716 23.284 0 15 0z" fill="#f97316"/>
+      <circle cx="15" cy="15" r="6" fill="white"/>
     </svg>`;
 
   if (state.marker) {
@@ -89,133 +71,109 @@ function placePin(lat, lon, doReverse = false) {
     const icon = L.divIcon({
       html: iconHtml,
       className: 'custom-pin pin-drop',
-      iconSize: [32, 42],
-      iconAnchor: [16, 42],
+      iconSize: [30, 40],
+      iconAnchor: [15, 40],
     });
     state.marker = L.marker([lat, lon], { icon, draggable: true }).addTo(state.map);
-
     state.marker.on('dragend', e => {
-      const pos = e.target.getLatLng();
-      placePin(pos.lat, pos.lng, true);
+      const p = e.target.getLatLng();
+      placePin(p.lat, p.lng, true);
     });
   }
 
   updateCoordFields(lat, lon);
-
+  syncDispFields(lat, lon);
   if (doReverse) reverseGeocode(lat, lon);
+  updateDownloadButton();
 }
 
 function updateCoordFields(lat, lon) {
-  const latInput = $('input-lat');
-  const lonInput = $('input-lon');
-  if (!latInput || !lonInput) return;
-
+  const li = $('input-lat'), lo = $('input-lon');
+  if (!li || !lo) return;
   if (state.dmsMode) {
-    latInput.value = decimalToDms(lat, 'lat');
-    lonInput.value = decimalToDms(lon, 'lon');
+    li.value = decimalToDms(lat, 'lat');
+    lo.value = decimalToDms(lon, 'lon');
   } else {
-    latInput.value = lat.toFixed(6);
-    lonInput.value = lon.toFixed(6);
+    li.value = lat.toFixed(6);
+    lo.value = lon.toFixed(6);
   }
 }
 
-function decimalToDms(decimal, axis) {
-  const abs     = Math.abs(decimal);
-  const deg     = Math.floor(abs);
-  const minFull = (abs - deg) * 60;
-  const min     = Math.floor(minFull);
-  const sec     = ((minFull - min) * 60).toFixed(2);
-  let dir;
-  if (axis === 'lat') dir = decimal >= 0 ? 'N' : 'S';
-  else                dir = decimal >= 0 ? 'E' : 'W';
+function syncDispFields(lat, lon) {
+  const ld = $('coord-lat-disp'), lo = $('coord-lon-disp');
+  if (ld) ld.value = state.dmsMode ? decimalToDms(lat, 'lat') : lat.toFixed(6);
+  if (lo) lo.value = state.dmsMode ? decimalToDms(lon, 'lon') : lon.toFixed(6);
+}
+
+function decimalToDms(d, axis) {
+  const abs = Math.abs(d), deg = Math.floor(abs);
+  const mf  = (abs - deg) * 60, min = Math.floor(mf);
+  const sec = ((mf - min) * 60).toFixed(2);
+  const dir = axis === 'lat' ? (d >= 0 ? 'N' : 'S') : (d >= 0 ? 'E' : 'W');
   return `${deg}° ${min}' ${sec}" ${dir}`;
 }
 
-function dmsToDecimal(dms) {
-  // Accepts formats: "40° 26' 46.56\" N" or "40,26,46.56N"
-  const clean = dms.replace(/[°'"]/g, ' ').replace(/\s+/g, ' ').trim();
-  const parts = clean.split(' ');
+function dmsToDecimal(s) {
+  const c = s.replace(/[°'"]/g, ' ').replace(/\s+/g, ' ').trim().split(' ');
   let deg = 0, min = 0, sec = 0, dir = '';
-
-  if (parts.length >= 4) {
-    deg = parseFloat(parts[0]) || 0;
-    min = parseFloat(parts[1]) || 0;
-    sec = parseFloat(parts[2]) || 0;
-    dir = parts[3].toUpperCase();
-  } else if (parts.length === 2) {
-    // "40.1234 N"
-    deg = parseFloat(parts[0]) || 0;
-    dir = parts[1].toUpperCase();
-  }
-
-  let decimal = deg + min / 60 + sec / 3600;
-  if (dir === 'S' || dir === 'W') decimal = -decimal;
-  return decimal;
+  if (c.length >= 4) { deg = +c[0]; min = +c[1]; sec = +c[2]; dir = c[3].toUpperCase(); }
+  else if (c.length === 2) { deg = +c[0]; dir = c[1].toUpperCase(); }
+  let v = deg + min / 60 + sec / 3600;
+  if (dir === 'S' || dir === 'W') v = -v;
+  return v;
 }
 
-// ── Upload Zone ───────────────────────────────────────────────────────────────
+// ── Upload ─────────────────────────────────────────────────────
 function initUpload() {
-  const zone    = $('upload-zone');
-  const fileInp = $('file-input');
+  const zone = $('upload-zone'), inp = $('file-input');
 
-  zone.addEventListener('dragover', e => {
-    e.preventDefault();
-    zone.classList.add('dragover');
-  });
-
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-
   zone.addEventListener('drop', e => {
     e.preventDefault();
     zone.classList.remove('dragover');
     handleFiles(Array.from(e.dataTransfer.files));
   });
-
-  // Click on zone (not the hidden input) triggers file picker
-  zone.addEventListener('click', e => {
-    if (e.target === fileInp) return;
-    fileInp.click();
-  });
-
-  fileInp.addEventListener('change', e => {
-    handleFiles(Array.from(e.target.files));
-    e.target.value = '';
-  });
+  zone.addEventListener('click', e => { if (e.target !== inp) inp.click(); });
+  inp.addEventListener('change', e => { handleFiles(Array.from(e.target.files)); e.target.value = ''; });
 }
 
 async function handleFiles(newFiles) {
-  const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
-  const maxFiles = 10;
+  const allowed = ['image/jpeg','image/jpg','image/png','image/webp','image/heic','image/heif'];
+  const allowedExts = ['jpg','jpeg','png','webp','heic','heif'];
+  const MAX = 15;
+  const isSingle = window._uploadMode === 'single';
 
   const valid = newFiles.filter(f => {
     const ext = f.name.split('.').pop().toLowerCase();
-    return allowed.includes(f.type) || ['jpg','jpeg','png','webp','heic','heif'].includes(ext);
+    return allowed.includes(f.type) || allowedExts.includes(ext);
   });
 
   if (valid.length === 0) {
-    showToast('error', 'Unsupported Format', 'Please upload JPG, PNG, WebP, or HEIC files.');
-    return;
+    showToast('error', 'Unsupported Format', 'Please upload JPG, PNG, WebP, or HEIC files.'); return;
   }
 
-  const remaining = maxFiles - state.files.length;
-  const toAdd = valid.slice(0, remaining);
+  if (isSingle) {
+    // Clear existing and take only first
+    state.files.forEach(f => URL.revokeObjectURL(f.previewUrl));
+    state.files = [];
+  }
 
+  const remaining = MAX - state.files.length;
+  const toAdd = valid.slice(0, remaining);
   if (valid.length > remaining) {
-    showToast('warn', 'Limit Reached', `Max 10 files. Added ${toAdd.length}.`);
+    showToast('warn', 'Limit Reached', `Max ${MAX} files. Added ${toAdd.length}.`);
   }
 
   for (const file of toAdd) {
-    const id = 'f_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    const id  = 'f_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     const url = URL.createObjectURL(file);
     const entry = { file, previewUrl: url, exifGps: null, id };
 
-    // Read EXIF GPS asynchronously
     try {
       if (typeof exifr !== 'undefined') {
         const gps = await exifr.gps(file);
-        if (gps && gps.latitude !== undefined) {
-          entry.exifGps = { lat: gps.latitude, lon: gps.longitude };
-        }
+        if (gps?.latitude !== undefined) entry.exifGps = { lat: gps.latitude, lon: gps.longitude };
       }
     } catch (_) {}
 
@@ -225,14 +183,14 @@ async function handleFiles(newFiles) {
   renderPreviews();
   updateDownloadButton();
 
-  // If first file has GPS and no pin placed yet
-  if (state.files.length > 0 && state.lat === null) {
+  // Auto-place pin from GPS if none set
+  if (state.lat === null) {
     const withGps = state.files.find(f => f.exifGps);
     if (withGps) {
       const { lat, lon } = withGps.exifGps;
       placePin(lat, lon, true);
       state.map.setView([lat, lon], 12);
-      showToast('success', 'GPS Found', `Existing coordinates loaded: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
+      showToast('success', 'GPS Found', `Loaded existing coordinates: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
     }
   }
 
@@ -246,22 +204,15 @@ function renderPreviews() {
   state.files.forEach((entry, idx) => {
     const item = document.createElement('div');
     item.className = 'preview-item';
-    item.dataset.id = entry.id;
-
     item.innerHTML = `
       <img src="${entry.previewUrl}" alt="${entry.file.name}">
       ${entry.exifGps ? '<div class="exif-badge">GPS</div>' : ''}
       <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
       <div class="file-status"><div class="file-progress" id="prog_${entry.id}"></div></div>
       <span class="status-icon" id="si_${entry.id}"></span>`;
-
     grid.appendChild(item);
   });
 
-  // Batch items in sidebar
-  renderBatchList();
-
-  // Remove button handlers
   grid.querySelectorAll('.remove-btn').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
@@ -275,101 +226,90 @@ function renderPreviews() {
   });
 
   $('preview-area').classList.toggle('hidden', state.files.length === 0);
+  renderBatchList();
 }
 
 function renderBatchList() {
-  const list = $('batch-list');
+  const list = $('batch-list'), sec = $('batch-section'), cnt = $('file-count');
   if (!list) return;
+
+  const show = state.files.length > 1 || window._uploadMode === 'bulk';
+  sec.classList.toggle('hidden', !show);
+  if (cnt) cnt.textContent = `(${state.files.length} / 15)`;
 
   list.innerHTML = '';
   state.files.forEach(entry => {
     const li = document.createElement('div');
     li.className = 'batch-item';
     li.id = 'bi_' + entry.id;
-    const sizeMb = (entry.file.size / 1024 / 1024).toFixed(1);
+    const mb = (entry.file.size / 1024 / 1024).toFixed(1);
     li.innerHTML = `
       <span class="bi-status" id="bst_${entry.id}">📷</span>
       <span class="bi-name" title="${entry.file.name}">${entry.file.name}</span>
-      <span class="bi-size">${sizeMb} MB</span>
-      <div class="bi-progress-bar"><div class="bi-progress-fill" id="bpf_${entry.id}"></div></div>`;
+      <span class="bi-size">${mb} MB</span>
+      <div class="bi-progress-bar" style="grid-column:1/-1"><div class="bi-progress-fill" id="bpf_${entry.id}"></div></div>`;
     list.appendChild(li);
   });
-
-  $('batch-section').classList.toggle('hidden', state.files.length <= 1);
 }
 
 function showExistingGps() {
-  const box  = $('existing-gps');
-  if (!box) return;
-
+  const box = $('existing-gps'), val = $('gps-val');
   const withGps = state.files.find(f => f.exifGps);
-  if (withGps && withGps.exifGps) {
-    const { lat, lon } = withGps.exifGps;
-    box.querySelector('.gps-values').textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  if (withGps?.exifGps && box && val) {
+    val.textContent = `${withGps.exifGps.lat.toFixed(6)}, ${withGps.exifGps.lon.toFixed(6)}`;
     box.classList.add('visible');
-  } else {
+  } else if (box) {
     box.classList.remove('visible');
   }
 }
 
-// ── Search ────────────────────────────────────────────────────────────────────
+// ── Search ─────────────────────────────────────────────────────
 function initSearch() {
-  const inp     = $('search-input');
-  const results = $('search-results');
+  const inp = $('search-input'), res = $('search-results');
 
   inp.addEventListener('input', () => {
     clearTimeout(state.searchTimeout);
     const q = inp.value.trim();
-    if (q.length < 3) { results.classList.remove('visible'); return; }
-
+    if (q.length < 3) { res.classList.remove('visible'); return; }
     state.searchTimeout = setTimeout(() => geocodeSearch(q), 500);
   });
 
-  inp.addEventListener('keydown', e => {
-    if (e.key === 'Escape') results.classList.remove('visible');
-  });
-
+  inp.addEventListener('keydown', e => { if (e.key === 'Escape') res.classList.remove('visible'); });
   document.addEventListener('click', e => {
-    if (!results.contains(e.target) && e.target !== inp) {
-      results.classList.remove('visible');
-    }
+    if (!res.contains(e.target) && e.target !== inp) res.classList.remove('visible');
   });
 }
 
 async function geocodeSearch(q) {
-  const results = $('search-results');
-  results.innerHTML = '<div class="search-result-item"><span>Searching…</span></div>';
-  results.classList.add('visible');
+  const res = $('search-results');
+  res.innerHTML = '<div class="search-result-item"><span>Searching…</span></div>';
+  res.classList.add('visible');
 
   try {
-    const res  = await fetch(`geocode.php?q=${encodeURIComponent(q)}`);
-    const data = await res.json();
-
+    const data = await fetch(`geocode.php?q=${encodeURIComponent(q)}`).then(r => r.json());
     if (!Array.isArray(data) || data.length === 0) {
-      results.innerHTML = '<div class="search-result-item"><span>No results found.</span></div>';
-      return;
+      res.innerHTML = '<div class="search-result-item"><span>No results found.</span></div>'; return;
     }
 
-    results.innerHTML = '';
+    res.innerHTML = '';
     data.forEach(item => {
       const el = document.createElement('div');
       el.className = 'search-result-item';
-      const name = item.display_name || 'Unknown';
+      const name  = item.display_name || 'Unknown';
       const short = name.split(',').slice(0, 3).join(', ');
       el.innerHTML = `<strong>${short}</strong><span>${name}</span>`;
       el.addEventListener('click', () => {
-        const lat = parseFloat(item.lat);
-        const lon = parseFloat(item.lon);
+        const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
         placePin(lat, lon);
         state.map.setView([lat, lon], 13, { animate: true });
         $('search-input').value = short;
-        results.classList.remove('visible');
+        res.classList.remove('visible');
         updateReverseAddr(name);
       });
-      results.appendChild(el);
+      res.appendChild(el);
     });
   } catch {
-    results.innerHTML = '<div class="search-result-item"><span>Search failed. Check connection.</span></div>';
+    res.innerHTML = '<div class="search-result-item"><span>Search failed.</span></div>';
   }
 }
 
@@ -378,17 +318,10 @@ async function reverseGeocode(lat, lon) {
   if (!addr) return;
   addr.textContent = 'Loading address…';
   addr.classList.remove('loaded');
-
   try {
-    const res  = await fetch(`geocode.php?lat=${lat}&lon=${lon}`);
-    const data = await res.json();
-    if (data.display_name) {
-      const short = data.display_name.split(',').slice(0, 4).join(', ');
-      updateReverseAddr(short);
-    }
-  } catch {
-    addr.textContent = '';
-  }
+    const data = await fetch(`geocode.php?lat=${lat}&lon=${lon}`).then(r => r.json());
+    if (data.display_name) updateReverseAddr(data.display_name.split(',').slice(0, 4).join(', '));
+  } catch { addr.textContent = ''; }
 }
 
 function updateReverseAddr(text) {
@@ -398,291 +331,194 @@ function updateReverseAddr(text) {
   addr.classList.add('loaded');
 }
 
-// ── Layer Toggle ──────────────────────────────────────────────────────────────
+// ── Layers ─────────────────────────────────────────────────────
 function initLayerToggle() {
-  const btnStreet = $('btn-street');
-  const btnSat    = $('btn-satellite');
-
-  btnStreet.addEventListener('click', () => {
+  $('btn-street').addEventListener('click', () => {
     if (state.tileType === 'street') return;
     state.map.removeLayer(state.satelliteTiles);
     state.streetTiles.addTo(state.map);
     state.tileType = 'street';
-    btnStreet.classList.add('active');
-    btnSat.classList.remove('active');
+    $('btn-street').classList.add('active');
+    $('btn-satellite').classList.remove('active');
   });
-
-  btnSat.addEventListener('click', () => {
+  $('btn-satellite').addEventListener('click', () => {
     if (state.tileType === 'satellite') return;
     state.map.removeLayer(state.streetTiles);
     state.satelliteTiles.addTo(state.map);
     state.tileType = 'satellite';
-    btnSat.classList.add('active');
-    btnStreet.classList.remove('active');
+    $('btn-satellite').classList.add('active');
+    $('btn-street').classList.remove('active');
   });
 }
 
-// ── Geolocation ───────────────────────────────────────────────────────────────
+// ── Geolocation ────────────────────────────────────────────────
 function initGeolocation() {
-  const btn = $('btn-geolocate');
-  btn.addEventListener('click', () => {
-    if (!navigator.geolocation) {
-      showToast('error', 'Not Supported', 'Geolocation is not available in your browser.');
-      return;
-    }
-    btn.textContent = '⏳';
+  $('btn-geolocate').addEventListener('click', () => {
+    if (!navigator.geolocation) { showToast('error', 'Not Supported', 'Geolocation unavailable.'); return; }
+    $('btn-geolocate').textContent = '⏳';
     navigator.geolocation.getCurrentPosition(
       pos => {
-        btn.textContent = '📍';
+        $('btn-geolocate').textContent = '📍';
         const { latitude: lat, longitude: lon } = pos.coords;
         placePin(lat, lon, true);
         state.map.setView([lat, lon], 14, { animate: true });
         showToast('success', 'Location Found', `${lat.toFixed(5)}, ${lon.toFixed(5)}`);
       },
-      err => {
-        btn.textContent = '📍';
-        showToast('error', 'Location Error', err.message);
-      },
+      err => { $('btn-geolocate').textContent = '📍'; showToast('error', 'Location Error', err.message); },
       { timeout: 10000, maximumAge: 60000 }
     );
   });
 }
 
-// ── DMS Toggle ────────────────────────────────────────────────────────────────
+// ── DMS Toggle ─────────────────────────────────────────────────
 function initDmsToggle() {
-  const btn     = $('dms-toggle');
-  const latInp  = $('input-lat');
-  const lonInp  = $('input-lon');
-
-  btn.addEventListener('click', () => {
+  $('dms-toggle').addEventListener('click', () => {
     state.dmsMode = !state.dmsMode;
-    btn.textContent  = state.dmsMode ? 'DD' : 'DMS';
-    btn.classList.toggle('active', state.dmsMode);
-    if (state.lat !== null) updateCoordFields(state.lat, state.lon);
+    $('dms-toggle').textContent = state.dmsMode ? 'DD' : 'DMS';
+    $('dms-toggle').classList.toggle('active', state.dmsMode);
+    if (state.lat !== null) { updateCoordFields(state.lat, state.lon); syncDispFields(state.lat, state.lon); }
   });
 
-  // Manual lat/lon input
-  [latInp, lonInp].forEach(inp => {
-    inp.addEventListener('change', () => syncCoordsFromInput());
-  });
-}
-
-function syncCoordsFromInput() {
-  const latInp = $('input-lat');
-  const lonInp = $('input-lon');
-  let lat, lon;
-
-  if (state.dmsMode) {
-    lat = dmsToDecimal(latInp.value);
-    lon = dmsToDecimal(lonInp.value);
-  } else {
-    lat = parseFloat(latInp.value);
-    lon = parseFloat(lonInp.value);
-  }
-
-  if (isNaN(lat) || isNaN(lon)) return;
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-    showToast('error', 'Invalid Coords', 'Latitude must be -90 to 90, longitude -180 to 180.');
-    return;
-  }
-
-  state.lat = lat;
-  state.lon = lon;
-  placePin(lat, lon, true);
-  state.map.setView([lat, lon], 12, { animate: true });
-}
-
-// ── Strip Mode ────────────────────────────────────────────────────────────────
-function initStripToggle() {
-  const toggle  = $('strip-toggle');
-  const coordSec = $('coords-section');
-
-  toggle.addEventListener('change', () => {
-    coordSec.style.opacity = toggle.checked ? '0.4' : '1';
-    coordSec.style.pointerEvents = toggle.checked ? 'none' : 'auto';
-    updateDownloadButton();
+  [$('input-lat'), $('input-lon')].forEach(inp => {
+    inp.addEventListener('change', () => {
+      const li = $('input-lat'), lo = $('input-lon');
+      const lat = state.dmsMode ? dmsToDecimal(li.value) : parseFloat(li.value);
+      const lon = state.dmsMode ? dmsToDecimal(lo.value) : parseFloat(lo.value);
+      if (isNaN(lat) || isNaN(lon)) return;
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        showToast('error', 'Invalid Coords', 'Lat: -90 to 90, Lon: -180 to 180'); return;
+      }
+      state.lat = lat; state.lon = lon;
+      placePin(lat, lon, true);
+      state.map.setView([lat, lon], 12, { animate: true });
+    });
   });
 }
 
-// ── Form ──────────────────────────────────────────────────────────────────────
-function initForm() {
-  const form = $('geotag-form');
-  form.addEventListener('submit', e => {
-    e.preventDefault();
-    if (state.processing) return;
-    submitForm();
-  });
-}
-
+// ── Download button state ──────────────────────────────────────
 function updateDownloadButton() {
-  const btn = $('btn-download');
-  const stripMode = $('strip-toggle')?.checked;
+  const btn  = $('btn-download');
+  const strip = $('strip-toggle')?.checked;
   const hasFiles  = state.files.length > 0;
   const hasCoords = state.lat !== null && state.lon !== null;
+  btn.disabled = !hasFiles || (!strip && !hasCoords);
+  btn.classList.toggle('ready', hasFiles && (strip || hasCoords));
 
-  btn.disabled = !hasFiles || (!stripMode && !hasCoords);
-  btn.classList.toggle('ready', hasFiles && (stripMode || hasCoords));
+  const label = state.files.length > 1
+    ? `⬇ Download ${state.files.length} Photos (ZIP)`
+    : '⬇ Download Geotagged Photo';
+  btn.textContent = label;
 }
 
-async function submitForm() {
-  if (state.files.length === 0) {
-    showToast('error', 'No Files', 'Please upload at least one image.');
-    return;
+// ── Form Submit ────────────────────────────────────────────────
+function submitForm() {
+  if (state.processing || state.files.length === 0) {
+    showToast('error', 'No Files', 'Please upload at least one image.'); return;
   }
 
-  const stripMode = $('strip-toggle').checked;
-
-  if (!stripMode && (state.lat === null || state.lon === null)) {
-    showToast('error', 'No Location', 'Please click the map or search to set coordinates.');
-    return;
+  const strip = $('strip-toggle').checked;
+  if (!strip && (state.lat === null || state.lon === null)) {
+    showToast('error', 'No Location', 'Click the map to set coordinates first.'); return;
   }
 
   state.processing = true;
-  $('btn-download').disabled = true;
-  $('btn-download').textContent = 'Processing…';
+  const btn = $('btn-download');
+  btn.disabled = true;
+  btn.textContent = '⏳ Processing…';
 
-  const formData = new FormData();
-
-  if (!stripMode) {
-    formData.append('lat', state.lat);
-    formData.append('lon', state.lon);
-    formData.append('alt', $('input-alt')?.value || '0');
-    formData.append('keywords',    $('input-keywords')?.value    || '');
-    formData.append('description', $('input-description')?.value || '');
-    formData.append('datetime',    $('input-datetime')?.value    || '');
-    formData.append('copyright',   $('input-copyright')?.value   || '');
+  const fd = new FormData();
+  if (!strip) {
+    fd.append('lat', state.lat);
+    fd.append('lon', state.lon);
+    fd.append('alt', $('input-alt')?.value || '0');
+    if ($('write-meta')?.checked) {
+      fd.append('description', $('input-description')?.value || '');
+      fd.append('keywords',    $('input-keywords')?.value    || '');
+      fd.append('copyright',   $('input-copyright')?.value   || '');
+    }
+    fd.append('datetime', $('input-datetime')?.value || '');
   } else {
-    formData.append('lat', '0');
-    formData.append('lon', '0');
-    formData.append('strip_exif', '1');
+    fd.append('lat', '0'); fd.append('lon', '0');
+    fd.append('strip_exif', '1');
   }
 
-  state.files.forEach((entry, i) => {
-    formData.append('files[]', entry.file, entry.file.name);
+  state.files.forEach(entry => {
+    fd.append('files[]', entry.file, entry.file.name);
     setFileStatus(entry.id, '⏳', 0);
   });
 
-  // Use XMLHttpRequest for progress events
   const xhr = new XMLHttpRequest();
   xhr.open('POST', 'upload.php', true);
   xhr.responseType = 'blob';
 
   xhr.upload.addEventListener('progress', e => {
-    if (e.lengthComputable) {
-      const pct = Math.round(e.loaded / e.total * 100);
-      // Distribute progress evenly across files during upload phase
-      state.files.forEach(entry => {
-        const fill = Math.min(pct * 0.8, 80); // upload = 0–80%
-        setFileProgress(entry.id, fill);
-      });
-    }
+    if (!e.lengthComputable) return;
+    const pct = Math.round(e.loaded / e.total * 100);
+    state.files.forEach(entry => setFileProgress(entry.id, Math.min(pct * 0.8, 80)));
   });
 
   xhr.addEventListener('load', async () => {
     state.processing = false;
-
     if (xhr.status === 200) {
-      const blob = xhr.response;
-      const cd   = xhr.getResponseHeader('Content-Disposition') || '';
-      let fname   = 'geotagged_photo';
-      const m     = cd.match(/filename="?([^"]+)"?/);
-      if (m) fname = m[1];
-      else if (state.files.length > 1) fname = 'geotagr_batch.zip';
-      else fname = state.files[0]?.file.name || 'geotagged.jpg';
-
-      // Mark all complete
-      state.files.forEach(entry => {
-        setFileProgress(entry.id, 100);
-        setFileStatus(entry.id, '✅');
-      });
-
+      const cd = xhr.getResponseHeader('Content-Disposition') || '';
+      const m  = cd.match(/filename="?([^"]+)"?/);
+      const fname = m ? m[1] : (state.files.length > 1 ? 'geotagr_batch.zip' : state.files[0]?.file.name || 'geotagged.jpg');
+      state.files.forEach(e => { setFileProgress(e.id, 100); setFileStatus(e.id, '✅'); });
       showToast('success', 'Done!', `Downloading ${fname}`);
-      downloadBlob(blob, fname);
+      downloadBlob(xhr.response, fname);
 
-      // Check for partial errors in response header
-      const errHeader = xhr.getResponseHeader('X-GeoTagr-Errors');
-      if (errHeader) {
-        try {
-          const errs = JSON.parse(errHeader);
-          if (errs && errs.length > 0) {
-            showToast('warn', 'Partial Errors', errs.slice(0, 2).join('; '));
-          }
-        } catch (_) {}
-      }
+      try {
+        const errs = JSON.parse(xhr.getResponseHeader('X-GeoTagr-Errors') || '[]');
+        if (errs.length) showToast('warn', 'Partial Errors', errs.slice(0,2).join('; '));
+      } catch (_) {}
     } else {
-      // Try to parse error JSON
-      const text = await xhr.response.text();
-      let msg = 'Upload failed. Please try again.';
-      try { msg = JSON.parse(text).error || msg; } catch (_) {}
-
-      state.files.forEach(entry => setFileStatus(entry.id, '❌'));
-      showToast('error', 'Upload Failed', msg);
+      state.files.forEach(e => setFileStatus(e.id, '❌'));
+      let msg = 'Upload failed.';
+      try { msg = JSON.parse(await xhr.response.text()).error || msg; } catch (_) {}
+      showToast('error', 'Failed', msg);
     }
-
-    $('btn-download').disabled = false;
-    $('btn-download').textContent = '⬇ Download Geotagged Photo';
     updateDownloadButton();
   });
 
   xhr.addEventListener('error', () => {
     state.processing = false;
-    state.files.forEach(entry => setFileStatus(entry.id, '❌'));
-    showToast('error', 'Network Error', 'Could not reach the server. Check your connection.');
-    $('btn-download').disabled = false;
-    $('btn-download').textContent = '⬇ Download Geotagged Photo';
+    state.files.forEach(e => setFileStatus(e.id, '❌'));
+    showToast('error', 'Network Error', 'Could not reach server.');
     updateDownloadButton();
   });
 
-  xhr.send(formData);
+  xhr.send(fd);
 }
 
 function setFileProgress(id, pct) {
-  const el  = $(`prog_${id}`);
-  const el2 = $(`bpf_${id}`);
-  if (el)  el.style.width  = pct + '%';
-  if (el2) el2.style.width = pct + '%';
+  [$(`prog_${id}`), $(`bpf_${id}`)].forEach(el => { if (el) el.style.width = pct + '%'; });
 }
 
-function setFileStatus(id, icon, progress = null) {
-  const si  = $(`si_${id}`);
-  const bst = $(`bst_${id}`);
-  if (si)  si.textContent  = icon;
-  if (bst) bst.textContent = icon;
-  if (progress !== null) setFileProgress(id, progress);
+function setFileStatus(id, icon, prog = null) {
+  [$(`si_${id}`), $(`bst_${id}`)].forEach(el => { if (el) el.textContent = icon; });
+  if (prog !== null) setFileProgress(id, prog);
 }
 
-// ── Download ──────────────────────────────────────────────────────────────────
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
-  const a   = document.createElement('a');
-  a.href     = url;
-  a.download = filename;
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 }
 
-// ── Toast Notifications ───────────────────────────────────────────────────────
 function showToast(type, title, message, duration = 4500) {
-  const container = $('toast-container');
   const icons = { success: '✓', error: '✕', warn: '⚠' };
-
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.innerHTML = `
-    <span class="toast-icon">${icons[type] || '●'}</span>
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.innerHTML = `
+    <span class="toast-icon">${icons[type]||'●'}</span>
     <div class="toast-body">
       <div class="toast-title">${title}</div>
       ${message ? `<div class="toast-msg">${message}</div>` : ''}
     </div>`;
-
-  container.appendChild(toast);
-
-  const hide = () => {
-    toast.classList.add('hiding');
-    setTimeout(() => toast.remove(), 300);
-  };
-
-  toast.addEventListener('click', hide);
+  $('toast-container').appendChild(t);
+  const hide = () => { t.classList.add('hiding'); setTimeout(() => t.remove(), 300); };
+  t.addEventListener('click', hide);
   setTimeout(hide, duration);
 }
