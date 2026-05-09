@@ -90,21 +90,8 @@ foreach ($files as $idx => $file) {
     if ($stripExif) {
         $success = $geoTagger->stripExif($inputPath, $outPath);
     } else {
-        // Write GPS
-        $success = $geoTagger->writeGPS($inputPath, $lat, $lon, $alt, $outPath);
-
-        // Write IPTC/XMP keywords and description
-        if ($success && ($keywords || $desc)) {
-            // For JPEG: merge IPTC into same file
-            if (in_array($mime, ['image/jpeg', 'image/jpg']) || in_array($ext, ['jpg', 'jpeg'])) {
-                $geoTagger->writeMeta($outPath, $datetime, $desc, $copyright, $outPath);
-            }
-        }
-
-        // Write additional EXIF meta (datetime, description, copyright)
-        if ($success && ($datetime || $desc || $copyright)) {
-            $geoTagger->writeMeta($outPath, $datetime, $desc, $copyright, $outPath);
-        }
+        // Write GPS + all SEO metadata in one pass
+        $success = $geoTagger->writeGPS($inputPath, $lat, $lon, $alt, $outPath, $desc, $keywords, $copyright);
     }
 
     if ($success && file_exists($outPath)) {
