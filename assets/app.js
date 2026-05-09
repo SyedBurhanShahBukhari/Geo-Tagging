@@ -142,7 +142,6 @@ async function handleFiles(newFiles) {
   const allowed = ['image/jpeg','image/jpg','image/png','image/webp','image/heic','image/heif'];
   const allowedExts = ['jpg','jpeg','png','webp','heic','heif'];
   const MAX = 15;
-  const isSingle = window._uploadMode === 'single';
 
   const valid = newFiles.filter(f => {
     const ext = f.name.split('.').pop().toLowerCase();
@@ -151,12 +150,6 @@ async function handleFiles(newFiles) {
 
   if (valid.length === 0) {
     showToast('error', 'Unsupported Format', 'Please upload JPG, PNG, WebP, or HEIC files.'); return;
-  }
-
-  if (isSingle) {
-    // Clear existing and take only first
-    state.files.forEach(f => URL.revokeObjectURL(f.previewUrl));
-    state.files = [];
   }
 
   const remaining = MAX - state.files.length;
@@ -233,7 +226,7 @@ function renderBatchList() {
   const list = $('batch-list'), sec = $('batch-section'), cnt = $('file-count');
   if (!list) return;
 
-  const show = state.files.length > 1 || window._uploadMode === 'bulk';
+  const show = state.files.length > 1;
   sec.classList.toggle('hidden', !show);
   if (cnt) cnt.textContent = `(${state.files.length} / 15)`;
 
@@ -393,6 +386,23 @@ function initDmsToggle() {
       state.map.setView([lat, lon], 12, { animate: true });
     });
   });
+
+  // Left-panel coord display inputs
+  [$('coord-lat-disp'), $('coord-lon-disp')].forEach(inp => {
+    if (!inp) return;
+    inp.addEventListener('change', () => {
+      const ld = $('coord-lat-disp'), lo = $('coord-lon-disp');
+      const lat = parseFloat(ld?.value);
+      const lon = parseFloat(lo?.value);
+      if (isNaN(lat) || isNaN(lon)) return;
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        showToast('error', 'Invalid Coords', 'Lat: -90 to 90, Lon: -180 to 180'); return;
+      }
+      state.lat = lat; state.lon = lon;
+      placePin(lat, lon, true);
+      state.map.setView([lat, lon], 12, { animate: true });
+    });
+  });
 }
 
 // ── Download button state ──────────────────────────────────────
@@ -431,12 +441,9 @@ function submitForm() {
     fd.append('lat', state.lat);
     fd.append('lon', state.lon);
     fd.append('alt', $('input-alt')?.value || '0');
-    if ($('write-meta')?.checked) {
-      fd.append('description', $('input-description')?.value || '');
-      fd.append('keywords',    $('input-keywords')?.value    || '');
-      fd.append('copyright',   $('input-copyright')?.value   || '');
-    }
-    fd.append('datetime', $('input-datetime')?.value || '');
+    fd.append('description', $('input-description')?.value || '');
+    fd.append('keywords',    $('input-keywords')?.value    || '');
+    fd.append('copyright',   $('input-copyright')?.value   || '');
   } else {
     fd.append('lat', '0'); fd.append('lon', '0');
     fd.append('strip_exif', '1');
