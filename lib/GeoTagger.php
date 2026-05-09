@@ -64,10 +64,18 @@ class GeoTagger
     }
 
     /**
-     * Write GPS coordinates (and optional metadata) to a JPEG file
+     * Write GPS coordinates and optional SEO metadata to an image file
      */
-    public function writeGPS(string $filePath, float $lat, float $lon, float $alt = 0.0, string $outputPath = ''): bool
-    {
+    public function writeGPS(
+        string $filePath,
+        float  $lat,
+        float  $lon,
+        float  $alt         = 0.0,
+        string $outputPath  = '',
+        string $description = '',
+        string $keywords    = '',
+        string $copyright   = ''
+    ): bool {
         if ($outputPath === '') {
             $outputPath = $filePath;
         }
@@ -75,22 +83,30 @@ class GeoTagger
         $mime = $this->getMimeType($filePath);
 
         if ($mime === 'image/jpeg') {
-            return $this->writeGpsJpeg($filePath, $lat, $lon, $alt, $outputPath);
+            return $this->writeGpsJpeg($filePath, $lat, $lon, $alt, $outputPath, $description, $keywords, $copyright);
         } elseif ($mime === 'image/png') {
-            return $this->writeXmpFile($filePath, $lat, $lon, $alt, $outputPath, 'png');
+            return $this->writeXmpFile($filePath, $lat, $lon, $alt, $outputPath, 'png', $description, $keywords, $copyright);
         } elseif ($mime === 'image/webp') {
-            return $this->writeXmpFile($filePath, $lat, $lon, $alt, $outputPath, 'webp');
+            return $this->writeXmpFile($filePath, $lat, $lon, $alt, $outputPath, 'webp', $description, $keywords, $copyright);
         } else {
-            // For HEIC and others, attempt JPEG-style
-            return $this->writeGpsJpeg($filePath, $lat, $lon, $alt, $outputPath);
+            // HEIC and others — attempt JPEG-style
+            return $this->writeGpsJpeg($filePath, $lat, $lon, $alt, $outputPath, $description, $keywords, $copyright);
         }
     }
 
     /**
-     * Write GPS to JPEG using PEL
+     * Write GPS (and SEO metadata) to JPEG using PEL, then inject XMP for SEO fields
      */
-    private function writeGpsJpeg(string $filePath, float $lat, float $lon, float $alt, string $outputPath): bool
-    {
+    private function writeGpsJpeg(
+        string $filePath,
+        float  $lat,
+        float  $lon,
+        float  $alt,
+        string $outputPath,
+        string $description = '',
+        string $keywords    = '',
+        string $copyright   = ''
+    ): bool {
         try {
             $jpeg = new PelJpeg($filePath);
             $exif = $jpeg->getExif();
@@ -114,31 +130,22 @@ class GeoTagger
                 $tiff->setIfd($ifd0);
             }
 
-            // Build GPS IFD
+            // GPS IFD
             $gpsIfd = new PelIfd(PelIfd::GPS);
-
-            // GPSVersionID
             $gpsIfd->addEntry(new PelEntryByte(PelTag::GPS_VERSION_ID, 2, 3, 0, 0));
 
-            // Latitude
-            $latRef = $lat >= 0 ? 'N' : 'S';
+            $latRef  = $lat >= 0 ? 'N' : 'S';
             $latRats = $this->decimalToRationals($lat);
             $gpsIfd->addEntry(new PelEntryAscii(PelTag::GPS_LATITUDE_REF, $latRef));
-            $gpsIfd->addEntry(new PelEntryRational(
-                PelTag::GPS_LATITUDE,
-                $latRats[0], $latRats[1], $latRats[2]
-            ));
+            $gpsIfd->addEntry(new PelEntryRational(PelTag::GPS_LATITUDE,
+                $latRats[0], $latRats[1], $latRats[2]));
 
-            // Longitude
-            $lonRef = $lon >= 0 ? 'E' : 'W';
+            $lonRef  = $lon >= 0 ? 'E' : 'W';
             $lonRats = $this->decimalToRationals($lon);
             $gpsIfd->addEntry(new PelEntryAscii(PelTag::GPS_LONGITUDE_REF, $lonRef));
-            $gpsIfd->addEntry(new PelEntryRational(
-                PelTag::GPS_LONGITUDE,
-                $lonRats[0], $lonRats[1], $lonRats[2]
-            ));
+            $gpsIfd->addEntry(new PelEntryRational(PelTag::GPS_LONGITUDE,
+                $lonRats[0], $lonRats[1], $lonRats[2]));
 
-            // Altitude
             $altRef = $alt >= 0 ? 0 : 1;
             $altNum = (int)round(abs($alt) * 100);
             $gpsIfd->addEntry(new PelEntryByte(PelTag::GPS_ALTITUDE_REF, $altRef));
@@ -146,12 +153,28 @@ class GeoTagger
 
             $ifd0->addSubIfd($gpsIfd);
 
+            // EXIF description and copyright in IFD0
+            if ($description) {
+                $ifd0->addEntry(new PelEntryAscii(PelTag::IMAGE_DESCRIPTION, $description));
+            }
+            if ($copyright) {
+                $ifd0->addEntry(new PelEntryAscii(PelTag::COPYRIGHT, $copyright));
+            }
+
             file_put_contents($outputPath, $jpeg->getBytes());
-            return true;
         } catch (\Exception $e) {
-            // PEL failed — fall back to binary injection
-            return $this->writeGpsBinaryFallback($filePath, $lat, $lon, $alt, $outputPath);
+            // PEL failed — fall back to binary GPS injection
+            $ok = $this->writeGpsBinaryFallback($filePath, $lat, $lon, $alt, $outputPath);
+            if (!$ok) return false;
         }
+
+        // Always inject XMP APP1 for keywords + full metadata (works regardless of PEL)
+        if ($description || $keywords || $copyright) {
+            $xmp = $this->buildXmpGps($lat, $lon, $alt, '', $description, $keywords, $copyright);
+            $this->injectXmpJpeg($outputPath, $xmp, $outputPath);
+        }
+
+        return true;
     }
 
     /**
@@ -300,11 +323,59 @@ class GeoTagger
     }
 
     /**
-     * Write XMP metadata (GPS) to PNG or WebP files
+     * Inject XMP APP1 segment into a JPEG file (separate from EXIF APP1)
      */
-    private function writeXmpFile(string $filePath, float $lat, float $lon, float $alt, string $outputPath, string $type): bool
+    private function injectXmpJpeg(string $filePath, string $xmp, string $outputPath): bool
     {
-        $xmp = $this->buildXmpGps($lat, $lon, $alt);
+        $data = file_get_contents($filePath);
+        if ($data === false || substr($data, 0, 2) !== "\xFF\xD8") return false;
+
+        // XMP APP1 uses the Adobe XMP namespace as identifier instead of "Exif\0\0"
+        $xmpNs   = "http://ns.adobe.com/xap/1.0/\x00";
+        $payload = $xmpNs . $xmp;
+        $segLen  = strlen($payload) + 2;
+        $app1    = "\xFF\xE1" . pack('n', $segLen) . $payload;
+
+        // Insert after SOI + any existing EXIF APP1, before other segments
+        $pos = 2;
+        while ($pos + 4 <= strlen($data)) {
+            if ($data[$pos] !== "\xFF") break;
+            $marker = ord($data[$pos + 1]);
+            if ($marker === 0xE1) { // APP1
+                $slen = unpack('n', substr($data, $pos + 2, 2))[1];
+                // Skip existing XMP APP1 (replace it)
+                if (substr($data, $pos + 4, 29) === "http://ns.adobe.com/xap/1.0/\x00") {
+                    $data = substr($data, 0, $pos) . substr($data, $pos + 2 + $slen);
+                    continue;
+                }
+                $pos += 2 + $slen;
+            } elseif ($marker === 0xE0) { // APP0 — skip JFIF
+                $slen = unpack('n', substr($data, $pos + 2, 2))[1];
+                $pos += 2 + $slen;
+            } else {
+                break;
+            }
+        }
+
+        $result = substr($data, 0, $pos) . $app1 . substr($data, $pos);
+        return file_put_contents($outputPath, $result) !== false;
+    }
+
+    /**
+     * Write XMP metadata (GPS + SEO) to PNG or WebP files
+     */
+    private function writeXmpFile(
+        string $filePath,
+        float  $lat,
+        float  $lon,
+        float  $alt,
+        string $outputPath,
+        string $type,
+        string $description = '',
+        string $keywords    = '',
+        string $copyright   = ''
+    ): bool {
+        $xmp = $this->buildXmpGps($lat, $lon, $alt, '', $description, $keywords, $copyright);
 
         if ($type === 'png') {
             return $this->injectXmpPng($filePath, $xmp, $outputPath);
