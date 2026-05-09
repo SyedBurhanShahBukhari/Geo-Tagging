@@ -59,6 +59,13 @@ function initMap() {
   state.streetTiles = streetTiles;
   state.satelliteTiles = satelliteTiles;
 
+  // Force tile refresh after container finishes rendering
+  setTimeout(() => map.invalidateSize(), 100);
+  setTimeout(() => map.invalidateSize(), 500);
+
+  // Re-invalidate on window resize
+  window.addEventListener('resize', () => map.invalidateSize());
+
   // Click on map to place pin
   map.on('click', e => {
     placePin(e.latlng.lat, e.latlng.lng, true);
