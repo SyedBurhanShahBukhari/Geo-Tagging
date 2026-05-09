@@ -1,0 +1,23 @@
+php_value upload_max_filesize 50M
+php_value post_max_size 55M
+php_value memory_limit 256M
+php_value max_execution_time 120
+
+# Security
+Options -Indexes
+Header always set X-Content-Type-Options nosniff
+Header always set X-Frame-Options SAMEORIGIN
+Header always set X-XSS-Protection "1; mode=block"
+
+# Protect lib folder from direct PHP execution via browser (allow include from server)
+<FilesMatch "\.(php)$">
+  Order allow,deny
+  Allow from all
+</FilesMatch>
+
+# Prevent direct access to lib directory
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^lib/ - [F,L]
+  RewriteRule ^tmp/ - [F,L]
+</IfModule>
